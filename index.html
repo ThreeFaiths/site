@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
+<meta name="referrer" content="no-referrer">
+<title>Private site</title>
+<style>
+:root { --bg:#f3efe6; --card:#fffdf8; --ink:#2b2620; --mute:#655c50; --line:#d6ccba; --accent:#6f531b; --on:#fffdf8; --err:#9b2c2c; }
+@media (prefers-color-scheme: dark) { :root { --bg:#16140f; --card:#211e18; --ink:#ece6da; --mute:#aaa192; --line:#3d372c; --accent:#d4b06a; --on:#16140f; --err:#eb9a9a; } }
+* { box-sizing:border-box; }
+html, body { margin:0; min-height:100%; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { min-height:100vh; display:grid; place-items:center; padding:24px 16px; }
+.card { width:100%; max-width:380px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:28px 24px; }
+h1 { font:600 1.4rem/1.25 Georgia, "Times New Roman", serif; margin:0 0 6px; }
+.lead { margin:0 0 20px; color:var(--mute); }
+label { display:block; }
+.lbl { font-weight:600; margin:0 0 6px; }
+input[type=password] { width:100%; font:inherit; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:inherit; }
+.keep { display:flex; align-items:center; gap:10px; margin:14px 0 20px; color:var(--mute); }
+.keep input { width:18px; height:18px; margin:0; accent-color:var(--accent); }
+button { width:100%; min-height:44px; font:inherit; font-weight:600; padding:10px 12px; border:0; border-radius:8px; background:var(--accent); color:var(--on); cursor:pointer; }
+button[disabled] { opacity:.65; cursor:progress; }
+input:focus-visible, button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.msg { min-height:1.5em; margin:14px 0 0; }
+.msg.err { color:var(--err); }
+</style>
+</head>
+<body>
+<main>
+<form class="card" id="f">
+  <h1>Private site</h1>
+  <p class="lead">This site is private. Enter the password you were given.</p>
+  <label for="pw" class="lbl">Password</label>
+  <input id="pw" name="password" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" required autofocus>
+  <label class="keep"><input id="keep" type="checkbox"> Keep me signed in on this device</label>
+  <button id="go" type="submit">Open</button>
+  <p class="msg" id="msg" role="status" aria-live="polite"></p>
+</form>
+</main>
+<script>
+/* The site is kept scrambled (AES-256-GCM, compressed first). Each person's password, slowed by PBKDF2-SHA-256, unlocks the site's key from
+   one of the slots below; the scrambled site is fetched only once a password has been accepted. Made by src/site/lock.js.
+   5 Nov 2026: a guest link (…/#g=<secret>, made by "lock.js link") unlocks the same way without typing — the part after # is never sent
+   to any server, and is taken out of the address bar at once; "Keep me signed in" (and every guest link) keeps the person's unlocking
+   key on this device as a key the browser will not give out (IndexedDB, not extractable), so new versions open without asking again
+   until the person is taken off the list; and sw.js keeps the scrambled site on the device, so later visits open at once. */
+(function () {
+  var D = {"v":"2c86f5467c4693ae","bin":"d-2c86f5467c4693ae.bin","size":14977895,"iv":"eAZozimsyFdhl3ld","salt":"zeHtzbNyhXDzd7jDBLuo/Q==","iter":600000,"slots":[{"iv":"9eke4x7ILi9sdcHn","w":"D4APeRIsx2C58iPcTsnvN1Jr3GbtTwnldpRM3x5eE898Lpy1hQtAHfXYPoOXO2Ko"}]}, STORE = 'tf.site.key', LINK = 'tf guest link';
+  if ('serviceWorker' in navigator) { try { navigator.serviceWorker.register('sw.js').catch(function () {}); } catch (e) {} }
+  var f = document.getElementById('f'), pw = document.getElementById('pw'), keep = document.getElementById('keep'), go = document.getElementById('go'), msg = document.getElementById('msg');
+  function say(t, err) { msg.textContent = t; msg.className = 'msg' + (err ? ' err' : ''); }
+  function b64(s) { var b = atob(s), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
+  function u2b64(u) { var s = ''; for (var i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s); }
+  function get() { try { return JSON.parse(localStorage.getItem(STORE) || 'null'); } catch (e) { return null; } }
+  function put(v) { try { if (v) localStorage.setItem(STORE, JSON.stringify(v)); else localStorage.removeItem(STORE); } catch (e) {} }
+  /* the kept unlocking key: one CryptoKey in IndexedDB, usable here but not readable */
+  function db() { return new Promise(function (res, rej) { var r = indexedDB.open('tf-site', 1); r.onupgradeneeded = function () { r.result.createObjectStore('keys'); }; r.onsuccess = function () { res(r.result); }; r.onerror = function () { rej(r.error); }; }); }
+  function kv(mode, fn) { return db().then(function (d) { return new Promise(function (res, rej) { var t = d.transaction('keys', mode), s = t.objectStore('keys'), q = fn(s); t.oncomplete = function () { res(q && q.result); }; t.onerror = function () { rej(t.error); }; }); }); }
+  function keptKek() { try { return kv('readonly', function (s) { return s.get('kek'); }).catch(function () { return null; }); } catch (e) { return Promise.resolve(null); } }
+  function keepKek(k) { try { return kv('readwrite', function (s) { s.put(k, 'kek'); }).catch(function () {}); } catch (e) { return Promise.resolve(); } }
+  /* forgetting the key also lets go of the scrambled site kept on the device (sw.js), so someone taken off the list keeps nothing */
+  function forgetKek() { try { if (window.caches) caches.delete('tf-site-1').catch(function () {}); } catch (e) {}
+    try { return kv('readwrite', function (s) { s.delete('kek'); }).catch(function () {}); } catch (e) { return Promise.resolve(); } }
+  if (/[?&]forget\b/.test(location.search)) { put(null); forgetKek(); }
+  if (!D || !window.crypto || !crypto.subtle || !window.DecompressionStream || !window.TextEncoder) {
+    say(location.protocol !== 'https:' && location.hostname !== 'localhost' ? 'Please open this site with https:// at the start of its address.' : 'This browser is too old to open this site. Please update it, or use a recent Chrome, Edge, Firefox or Safari.', true);
+    go.disabled = true; return;
+  }
+  async function kekFor(p) {
+    var base = await crypto.subtle.importKey('raw', new TextEncoder().encode(p.normalize('NFC')), 'PBKDF2', false, ['deriveBits']);
+    var bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: b64(D.salt), iterations: D.iter }, base, 256);
+    return crypto.subtle.importKey('raw', bits, 'AES-GCM', false, ['decrypt']);
+  }
+  /* a guest link's secret: 32 random bytes, stretched by HKDF-SHA-256 (no slowing needed: it is not a password anyone chose) */
+  async function kekForLink(s) {
+    var raw = b64(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4));
+    var base = await crypto.subtle.importKey('raw', raw, 'HKDF', false, ['deriveBits']);
+    var bits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: b64(D.salt), info: new TextEncoder().encode(LINK) }, base, 256);
+    return crypto.subtle.importKey('raw', bits, 'AES-GCM', false, ['decrypt']);
+  }
+  async function unwrap(kek) {
+    for (var i = 0; i < D.slots.length; i++) {
+      try { return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(D.slots[i].iv) }, kek, b64(D.slots[i].w))); } catch (e) {}
+    }
+    return null;
+  }
+  async function fetchSite() {
+    var r = await fetch(D.bin, { cache: 'no-cache' });
+    if (!r.ok) throw new Error('fetch ' + r.status);
+    if (!r.body || !r.body.getReader) return new Uint8Array(await r.arrayBuffer());
+    var rd = r.body.getReader(), parts = [], got = 0, total = D.size;
+    for (;;) { var x = await rd.read(); if (x.done) break; parts.push(x.value); got += x.value.length; say('Opening… ' + Math.min(99, Math.round(got / total * 100)) + '%'); }
+    var out = new Uint8Array(got), o = 0; parts.forEach(function (p) { out.set(p, o); o += p.length; }); return out;
+  }
+  async function openSite(raw) {
+    var key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
+    var data = await fetchSite(); say('Opening…');
+    var gz = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(D.iv) }, key, data);
+    var html = await new Response(new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+    document.open(); document.write(html); document.close();
+  }
+  function busy(b) { go.disabled = b; pw.disabled = b; }
+  /* opening without typing, in this order: a guest link; the key kept on this device; (from before 5 Nov 2026) the key of one version */
+  (async function () {
+    var m = /^#g=([A-Za-z0-9_-]{40,})$/.exec(location.hash || '');
+    if (m) {
+      history.replaceState(null, '', location.pathname + location.search);            /* the secret leaves the address bar at once */
+      busy(true); say('Opening…');
+      try {
+        var lk = await kekForLink(m[1]), r1 = await unwrap(lk);
+        if (r1) { await keepKek(lk); put(null); await openSite(r1); return; }
+        busy(false); say('This link no longer opens the site. Ask the person who sent it for a new one.', true); return;
+      } catch (err) { busy(false); say('The site could not be opened. Check your connection and try again.', true); return; }
+    }
+    var kk = await keptKek();
+    if (kk) {
+      busy(true); say('Opening…');
+      try { var r2 = await unwrap(kk); if (r2) { await openSite(r2); return; } await forgetKek(); }
+      catch (err) { busy(false); say('The site could not be opened. Check your connection and try again.', true); return; }
+      busy(false); say('Please enter your password.');
+    }
+    var kept = get();
+    if (kept && kept.v === D.v && kept.k) { busy(true); say('Opening…'); openSite(b64(kept.k)).catch(function () { put(null); busy(false); say('Please enter your password.'); }); }
+    else if (kept) put(null);
+  })();
+  f.addEventListener('submit', async function (e) {
+    e.preventDefault(); if (!pw.value) return;
+    busy(true); say('Checking…');
+    try {
+      var kek = await kekFor(pw.value), raw = await unwrap(kek);
+      if (!raw) { busy(false); say('That password is not right. Check it and try again.', true); pw.select(); return; }
+      if (keep.checked) { await keepKek(kek); put(null); }
+      pw.value = '';
+      await openSite(raw);
+    } catch (err) { busy(false); say('The site could not be opened. Check your connection and try again.', true); }
+  });
+})();
+</script>
+</body>
+</html>
